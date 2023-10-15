@@ -4,10 +4,6 @@ import { Theme, isTheme } from "~/components/ThemeProvider";
 
 const sessionSecret = SESSION_SECRET;
 
-// if (!sessionSecret) {
-//   throw new Error("SESSION_SECRET must be set");
-// }
-
 const themeStorage = createCookieSessionStorage({
   cookie: {
     name: "theme-cookie",
@@ -24,7 +20,7 @@ async function getThemeSession(request: Request) {
   return {
     getTheme: () => {
       const themeValue = session.get("theme");
-      return isTheme(themeValue) ? themeValue : "light";
+      return isTheme(themeValue) ? themeValue : "dark";
     },
     setTheme: (theme: Theme) => session.set("theme", theme),
     commit: () => themeStorage.commitSession(session),

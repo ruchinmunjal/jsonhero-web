@@ -1,8 +1,12 @@
 import { customRandom } from "nanoid";
+import safeFetch from "./utilities/safeFetch";
+import createFromRawXml from "./utilities/xml/createFromRawXml";
+import isXML from "./utilities/xml/isXML";
 
 type BaseJsonDocument = {
   id: string;
   title: string;
+  readOnly: boolean;
 };
 
 export type RawJsonDocument = BaseJsonDocument & {
@@ -13,6 +17,13 @@ export type RawJsonDocument = BaseJsonDocument & {
 export type UrlJsonDocument = BaseJsonDocument & {
   type: "url";
   url: string;
+};
+
+export type CreateJsonOptions = {
+  ttl?: number;
+  readOnly?: boolean;
+  injest?: boolean;
+  metadata?: any;
 };
 
 export type JSONDocument = RawJsonDocument | UrlJsonDocument;
@@ -28,33 +39,66 @@ export async function createFromUrlOrRawJson(
   if (isJSON(urlOrJson)) {
     return createFromRawJson("Untitled", urlOrJson);
   }
+
+  // Wrapper for createFromRawJson to handle XML
+  // TODO ? change from urlOrJson to urlOrJsonOrXml
+  if (isXML(urlOrJson)) {
+    return createFromRawXml("Untitled", urlOrJson);
+  }
 }
 
 export async function createFromUrl(
   url: URL,
-  title?: string
+  title?: string,
+  options?: CreateJsonOptions
 ): Promise<JSONDocument> {
+  if (options?.injest) {
+    const response = await safeFetch(url.href);
+
+    if (!response.ok) {
+      throw new Error(`Failed to injest ${url.href}`);
+    }
+
+    return createFromRawJson(title || url.href, await response.text(), options);
+  }
+
   const docId = createId();
-  const doc = {
+
+  const doc: JSONDocument = {
     id: docId,
     type: <const>"url",
     url: url.href,
     title: title ?? url.hostname,
+    readOnly: options?.readOnly ?? false,
   };
 
-  await DOCUMENTS.put(docId, JSON.stringify(doc));
+  await DOCUMENTS.put(docId, JSON.stringify(doc), {
+    expirationTtl: options?.ttl ?? undefined,
+    metadata: options?.metadata ?? undefined,
+  });
 
   return doc;
 }
 
 export async function createFromRawJson(
   filename: string,
-  contents: string
+  contents: string,
+  options?: CreateJsonOptions
 ): Promise<JSONDocument> {
   const docId = createId();
-  const doc = { id: docId, type: <const>"raw", contents, title: filename };
+  const doc: JSONDocument = {
+    id: docId,
+    type: <const>"raw",
+    contents,
+    title: filename,
+    readOnly: options?.readOnly ?? false,
+  };
 
-  await DOCUMENTS.put(docId, JSON.stringify(doc));
+  JSON.parse(contents);
+  await DOCUMENTS.put(docId, JSON.stringify(doc), {
+    expirationTtl: options?.ttl ?? undefined,
+    metadata: options?.metadata ?? undefined,
+  });
 
   return doc;
 }
@@ -84,6 +128,10 @@ export async function updateDocument(
   return updated;
 }
 
+export async function deleteDocument(slug: string): Promise<void> {
+  await DOCUMENTS.delete(slug);
+}
+
 function createId(): string {
   const nanoid = customRandom(
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
@@ -110,7 +158,7 @@ function isJSON(possibleJson: string): boolean {
   try {
     JSON.parse(possibleJson);
     return true;
-  } catch {
-    return false;
+  } catch (e: any) {
+    throw new Error(e.message);
   }
 }

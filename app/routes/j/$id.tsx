@@ -1,12 +1,15 @@
 import {
+  ActionFunction,
   LoaderFunction,
   MetaFunction,
   Outlet,
+  redirect,
   useLoaderData,
   useLocation,
+  useParams,
 } from "remix";
 import invariant from "tiny-invariant";
-import { getDocument, JSONDocument } from "~/jsonDoc.server";
+import { deleteDocument, getDocument, JSONDocument } from "~/jsonDoc.server";
 import { JsonDocProvider } from "~/hooks/useJsonDoc";
 import { useEffect } from "react";
 import { JsonProvider } from "~/hooks/useJson";
@@ -22,7 +25,17 @@ import safeFetch from "~/utilities/safeFetch";
 import { JsonTreeViewProvider } from "~/hooks/useJsonTree";
 import { JsonSearchProvider } from "~/hooks/useJsonSearch";
 import { LargeTitle } from "~/components/Primitives/LargeTitle";
+import { ExtraLargeTitle } from "~/components/Primitives/ExtraLargeTitle";
 import { Body } from "~/components/Primitives/Body";
+import { PageNotFoundTitle } from "~/components/Primitives/PageNotFoundTitle";
+import { SmallSubtitle } from "~/components/Primitives/SmallSubtitle";
+import { Logo } from "~/components/Icons/Logo";
+import {
+  commitSession,
+  getSession,
+  setErrorMessage,
+  setSuccessMessage,
+} from "~/services/toast.server";
 
 export const loader: LoaderFunction = async ({ params, request }) => {
   invariant(params.id, "expected params.id");
@@ -36,6 +49,7 @@ export const loader: LoaderFunction = async ({ params, request }) => {
   }
 
   const path = getPathFromRequest(request);
+  const minimal = getMinimalFromRequest(request);
 
   if (doc.type == "url") {
     console.log(`Fetching ${doc.url}...`);
@@ -43,6 +57,10 @@ export const loader: LoaderFunction = async ({ params, request }) => {
     const jsonResponse = await safeFetch(doc.url);
 
     if (!jsonResponse.ok) {
+      console.log(
+        `Failed to fetch ${doc.url}: ${jsonResponse.status} (${jsonResponse.statusText})`
+      );
+
       throw new Response(jsonResponse.statusText, {
         status: jsonResponse.status,
       });
@@ -50,18 +68,55 @@ export const loader: LoaderFunction = async ({ params, request }) => {
 
     const json = await jsonResponse.json();
 
+    console.log(`Fetched ${doc.url} with json, returning...`);
+
     return {
       doc,
       json,
       path,
+      minimal,
     };
   } else {
     return {
       doc,
       json: JSON.parse(doc.contents),
       path,
+      minimal,
     };
   }
+};
+
+export const action: ActionFunction = async ({ request, params }) => {
+  // Return if the request is not a DELETE
+  if (request.method !== "DELETE") {
+    return;
+  }
+
+  invariant(params.id, "expected params.id");
+
+  const toastCookie = await getSession(request.headers.get("cookie"));
+
+  const document = await getDocument(params.id);
+
+  if (!document) {
+    setErrorMessage(toastCookie, "Document not found", "Error");
+
+    return redirect(`/`);
+  }
+
+  if (document.readOnly) {
+    setErrorMessage(toastCookie, "Document is read-only", "Error");
+
+    return redirect(`/j/${params.id}`);
+  }
+
+  await deleteDocument(params.id);
+
+  setSuccessMessage(toastCookie, "Document deleted successfully", "Success");
+
+  return redirect("/", {
+    headers: { "Set-Cookie": await commitSession(toastCookie) },
+  });
 };
 
 function getPathFromRequest(request: Request): string | null {
@@ -80,18 +135,40 @@ function getPathFromRequest(request: Request): string | null {
   return `$.${path}`;
 }
 
-type LoaderData = { doc: JSONDocument; json: unknown; path?: string };
+function getMinimalFromRequest(request: Request): boolean | undefined {
+  const url = new URL(request.url);
+
+  const minimal = url.searchParams.get("minimal");
+
+  if (!minimal) {
+    return;
+  }
+
+  return minimal === "true";
+}
+
+type LoaderData = {
+  doc: JSONDocument;
+  json: unknown;
+  path?: string;
+  minimal?: boolean;
+};
 
 export const meta: MetaFunction = ({
   data,
 }: {
   data: LoaderData | undefined;
 }) => {
-  if (!data) {
-    return { title: "JSON Hero" };
+  let title = "JSON Hero";
+
+  if (data) {
+    title += ` - ${data.doc.title}`;
   }
+
   return {
-    title: `JSON Hero - ${data.doc.title}`,
+    title,
+    "og:title": title,
+    robots: "noindex,nofollow",
   };
 };
 
@@ -112,6 +189,7 @@ export default function JsonDocumentRoute() {
       doc={loaderData.doc}
       path={loaderData.path}
       key={loaderData.doc.id}
+      minimal={loaderData.minimal}
     >
       <JsonProvider initialJson={loaderData.json}>
         <JsonSchemaProvider>
@@ -119,7 +197,7 @@ export default function JsonDocumentRoute() {
             <JsonSearchProvider>
               <JsonTreeViewProvider overscan={25}>
                 <div>
-                  <div className="block sm:hidden fixed bg-black/80 h-screen w-screen z-50 text-white">
+                  <div className="block md:hidden fixed bg-black/80 h-screen w-screen z-50 text-white">
                     <div className="flex flex-col items-center justify-center h-full text-center">
                       <LargeTitle>JSON Hero only works on desktop</LargeTitle>
                       <LargeTitle>👇</LargeTitle>
@@ -133,8 +211,8 @@ export default function JsonDocumentRoute() {
                     </div>
                   </div>
                   <div className="h-screen flex flex-col sm:overflow-hidden">
-                    <Header />
-                    <div className="bg-slate-50 flex-grow transition dark:bg-slate-900">
+                    {!loaderData.minimal && <Header />}
+                    <div className="bg-slate-50 flex-grow transition dark:bg-slate-900 overflow-y-auto">
                       <div className="main-container flex justify-items-stretch h-full">
                         <SideBar />
                         <JsonView>
@@ -163,5 +241,37 @@ export default function JsonDocumentRoute() {
         </JsonSchemaProvider>
       </JsonProvider>
     </JsonDocProvider>
+  );
+}
+
+export function CatchBoundary() {
+  const params = useParams();
+  return (
+    <div className="flex items-center justify-center w-screen h-screen bg-[rgb(56,52,139)]">
+      <div className="w-2/3">
+        <div className="text-center text-lime-300">
+          <div className="">
+            <Logo />
+          </div>
+          <PageNotFoundTitle className="text-center leading-tight">
+            404
+          </PageNotFoundTitle>
+        </div>
+        <div className="text-center leading-snug text-white">
+          <ExtraLargeTitle className="text-slate-200 mb-8">
+            <b>Sorry</b>! Something went wrong...
+          </ExtraLargeTitle>
+          <SmallSubtitle className="text-slate-200 mb-8">
+            We couldn't find the page <b>'https://jsonhero.io/j/{params.id}</b>'
+          </SmallSubtitle>
+          <a
+            href="/"
+            className="mx-auto w-24 bg-lime-500 text-slate-900 text-lg font-bold px-5 py-1 rounded-sm uppercase whitespace-nowrap cursor-pointer opacity-90 hover:opacity-100 transition"
+          >
+            HOME
+          </a>
+        </div>
+      </div>
+    </div>
   );
 }
